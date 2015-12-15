@@ -3,41 +3,20 @@ var mongoose = require('mongoose'),
   request = require('request'),
   mandrill = require('mandrill-api/mandrill'),
   async = require('async'),
-  slackUrl,
-  mandrillKey,
   emailSchema = new mongoose.Schema({
     to: String,
     region: String,
     sent: { type: Date, default: moment().utc() }
   }),
   Email = mongoose.models.Email,
-  timeout = 10;
-
-function checkDatabaseInitialized(context, callback) {
-	if (!mongoose.connection.readyState) {
-    console.log('Connecting...');
-		mongoose.connect(context.data.MONGO_CONN);
-    if (!Email) {
-      Email = mongoose.model('Email', emailSchema);
-    }
-
-		this.db = mongoose.connection;
-		this.db.on('error', function (err) {
-			if (err) {
-				callback(err);
-			}
-
-			return;
-		});
-
-		this.db.once('open', function (cb) {
-			console.log('Database initialized.');
-		});
-	}
-}
+  slackUrl,
+  mandrillKey,
+  timeout = 10,
+  defaultTimeout = 10;
 
 module.exports = function(context, callback) {
   var connectionString = context.data.MONGO_CONN,
+    timeout = context.data.TIMEOUT || defaultTimeout,
     to = context.data.to,
     region = context.data.region,
     fromDate = moment().utc().startOf('day'),
@@ -77,18 +56,14 @@ module.exports = function(context, callback) {
     console.log('Entries to compare', entries);
     var lastHour = entries.mandrill.length === 0 ? entries.wt[0].hour : entries.mandrill[0].hour;
     compareEntries(entries, lastHour, function(result) {
-      console.log('Notifying Slack...');
       notifySlack(result, entries.options, function(err, status) {
         return callback(err, status);
       });
     });
-
-    // callback(err, entries);
   });
 }
 
 function compareEntries(entries, hour, cb, secondPass) {
-  console.log(2);
   var mandrillCount = entries.mandrill.filter(function(item) { return item.hour === hour; })[0] || 0;
   var emailCount = entries.wt.filter(function(item) { return item.hour === hour; })[0] || 0;
 
@@ -104,7 +79,11 @@ function compareEntries(entries, hour, cb, secondPass) {
   if (mandrillCount == 0 && emailCount == 0) {
     if (secondPass) {
       // No emails were sent in two consecutive hours. Passed.
-      return cb(1);
+      return cb({
+        success: true,
+        mandrillCount: 0,
+        emailCount: 0
+      });
     }
 
     newHour = hour == 0 ? 23 : hour--;
@@ -113,7 +92,11 @@ function compareEntries(entries, hour, cb, secondPass) {
 
   if (mandrillCount === emailCount) {
     // Success
-    return cb(1);
+    return cb({
+      success: true,
+      mandrillCount: mandrillCount,
+      emailCount: emailCount
+    });
   }
 
   if (mandrillCount < emailCount) {
@@ -121,7 +104,13 @@ function compareEntries(entries, hour, cb, secondPass) {
     var difference = Math.abs(moment(entries.options.lastSent).diff(moment().utc(), 'minutes'));
     console.log('Warning: Mandrill count less than emails registered in the database');
     console.log('Time difference between the last time we check emails and current time:', difference);
-    return cb(difference <= timeout);
+    return cb({
+      success: difference <= timeout,
+      lastSent: entries.options.lastSent,
+      difference: difference,
+      mandrillCount: mandrillCount,
+      emailCount: emailCount
+    });
   }
 
   // Mandrill count is greater than the email count. Add entries in the db to match the same number for future checks.
@@ -138,7 +127,11 @@ function compareEntries(entries, hour, cb, secondPass) {
 
   async.parallel(saveEntries, function() {
     // Entries saved. Return success
-    return cb(1);
+    return cb({
+      success: true,
+      mandrillCount: mandrillCount,
+      emailCount: emailCount
+    });
   });
 }
 
@@ -204,29 +197,55 @@ function aggregateMandrillEntries(options, cb) {
   });
 }
 
-function notifySlack(status, options, cb) {
-  var color = status ? 'good' : 'danger',
-    testStatus = status ? 'Success' : 'Failed',
-    brief = 'Mandrill test run completed.',
-    title = 'Mandrill API (' + options.region.toUpperCase() + ') status: ' + testStatus,
-    body = status ? 'Test successful for region "' + options.region.toUpperCase() + '"' : 'Email not sent after ' + timeout + ' minutes.';
+function notifySlack(result, options, cb) {
+  // Ignore notification if the result is Sucess or no slack webhook found
+  if (result.success || !slackUrl) {
+    return cb(null, result);
+  }
 
+  console.log('Notifying Slack...');
 	var payload = {
 		attachments: [{
       channel: '#release-mgmt',
-			fallback: brief,
-			pretext: brief,
-			color: color,
-			fields: [{ title: title, value: body, short: false }]
+			fallback: 'Mandrill test run completed.',
+			pretext: 'Mandrill test run completed.',
+			color: 'danger',
+			fields: [{
+        title: 'Mandrill API (' + options.region.toUpperCase() + ') status: Failed',
+        value: 'Email not sent after ' + timeout + ' minutes.\nEmail count: ' + result.emailCount + '\nMandrill count: ' + result.mandrillCount,
+        short: false
+      }]
 		}]
 	};
 
-  console.log('Slack payload', payload);
 	request.post({ url: slackUrl, form: { payload: JSON.stringify(payload) } }, function (error, response, body) {
 		if (error) {
 			cb('Unable to send reply back to Slack.');
 		}
 
-		cb(null, 'done');
+		cb(null, result);
 	});
+}
+
+function checkDatabaseInitialized(context, callback) {
+	if (!mongoose.connection.readyState) {
+    console.log('Connecting...');
+		mongoose.connect(context.data.MONGO_CONN);
+    if (!Email) {
+      Email = mongoose.model('Email', emailSchema);
+    }
+
+		this.db = mongoose.connection;
+		this.db.on('error', function (err) {
+			if (err) {
+				callback(err);
+			}
+
+			return;
+		});
+
+		this.db.once('open', function (cb) {
+			console.log('Database initialized.');
+		});
+	}
 }
