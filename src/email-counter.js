@@ -7,29 +7,6 @@ var mongoose = require('mongoose'),
   }),
   Email = mongoose.models.Email;
 
-function checkDatabaseInitialized(context, callback) {
-  if (!this.dbInitialized) {
-    if (!Email) {
-      Email = mongoose.model('Email', emailSchema);
-    }
-
-    mongoose.connect(context.data.MONGO_CONN);
-    this.db = mongoose.connection;
-    this.db.on('error', function (err) {
-      if (err) {
-        callback(err);
-      }
-
-      return;
-    });
-
-    this.db.once('open', function (cb) {
-      console.log('Database initialized.');
-      this.dbInitialized = true;
-    });
-  }
-}
-
 module.exports = function(context, callback) {
   var connectionString = context.data.MONGO_CONN;
 
@@ -55,4 +32,27 @@ module.exports = function(context, callback) {
 
     return callback(err, 'done');
   });
+}
+
+function checkDatabaseInitialized(context, callback) {
+	if (!mongoose.connection.readyState) {
+    console.log('Connecting...');
+		mongoose.connect(context.data.MONGO_CONN);
+    if (!Email) {
+      Email = mongoose.model('Email', emailSchema);
+    }
+
+		this.db = mongoose.connection;
+		this.db.on('error', function (err) {
+			if (err) {
+				callback(err);
+			}
+
+			return;
+		});
+
+		this.db.once('open', function (cb) {
+			console.log('Database initialized.');
+		});
+	}
 }
