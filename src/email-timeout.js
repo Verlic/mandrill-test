@@ -113,29 +113,18 @@ function compareEntries(entries, hour, cb, secondPass) {
     });
   }
 
-  // Mandrill count is greater than the email count. Add entries in the db to match the same number for future checks.
-  var saveEntries = [];
-  for (var i = 0; i < mandrillCount - emailCount; i++) {
-    var entry = new Email({
-      to: entries.options.to,
-      region: entries.options.region,
-      sent: moment().utc()
-    });
-
-    saveEntries.push(function(callback) { console.log('Saving entry...'); entry.save(); callback(); });
-  }
-
-  async.parallel(saveEntries, function() {
-    // Entries saved. Return success
-    return cb({
-      success: true,
-      mandrillCount: mandrillCount,
-      emailCount: emailCount
-    });
+  return cb({
+    success: true,
+    mandrillCount: mandrillCount,
+    emailCount: emailCount
   });
 }
 
 function aggregateEmails(options, cb) {
+  if (!Email) {
+    Email = mongoose.model('Email', emailSchema);
+  }
+
   Email.aggregate([
     {
       $match: { $and: [
